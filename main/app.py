@@ -10,41 +10,41 @@ from sklearn.metrics.pairwise import cosine_similarity
 from itertools import combinations
 from collections import Counter
 
-# ----------------------------
+# --------------------------------------------------
 # 페이지 설정
-# ----------------------------
+# --------------------------------------------------
 st.set_page_config(
     page_title="한동인성교육 채점 시스템",
     layout="wide"
 )
 
 st.title("📘 한동인성교육 채점 시스템 (for 예림 · 하영)")
+st.divider()
 
-# ----------------------------
-# 사용 설명
-# ----------------------------
+# --------------------------------------------------
+# 사용 안내
+# --------------------------------------------------
 with st.expander("📖 사용 방법 안내", expanded=False):
     st.markdown("""
-### 사용 방법
+### 🔹 사용 방법
+1️⃣ 학생 PDF를 ZIP으로 압축 후 업로드  
+2️⃣ 분석 기준 설정  
+3️⃣ 분석 시작 클릭  
 
-1️⃣ 학생 PDF 파일들을 ZIP으로 압축하여 업로드  
-2️⃣ 표절 의심 기준 설정 (기본 75%)  
-3️⃣ 최소 글자 수 기준 설정  
-4️⃣ 분석 시작 클릭  
+### 🔹 분석 항목
+- 📏 글자 수 (레이아웃 제거 후 기준)
+- 🚨 표절 의심도 (레이아웃 제거 후 계산)
+- 🎓 강의 주제 적합도 (너무 낮은 경우만 표시)
 
-### 분석 내용
-
-- 📊 레이아웃 제거 전/후 글자 수 비교
-- 🔴 기준 미달 학생 표시
-- 🚨 기준 이상 유사 조합 표시
-- 📌 왜 유사한지 공통 표현 확인 가능
-
-※ 표절도는 **레이아웃 제거 후 텍스트 기준**으로 계산됩니다.
+※ AI가 판정하지 않습니다.  
+※ 표시된 항목만 직접 검토하시면 됩니다.
 """)
 
-# ----------------------------
-# 기본 레이아웃 제거 텍스트
-# ----------------------------
+# --------------------------------------------------
+# 레이아웃 제거 설정
+# --------------------------------------------------
+st.subheader("✂ 레이아웃 제거 설정")
+
 default_layout = """이름과 학번:
 작성일자:
 강의주제:
@@ -58,57 +58,62 @@ default_layout = """이름과 학번:
 교수님께 전달될 수 있습니다.
 """
 
-st.subheader("✂ 레이아웃 제거 설정")
-
 layout_text = st.text_area(
-    "글자 수 계산 및 표절 분석에서 제외할 공통 문구 (편집 가능)",
+    "제외할 공통 문구 (편집 가능)",
     value=default_layout,
-    height=220
+    height=200
 )
 
-# ----------------------------
-# 기준 설정
-# ----------------------------
-col1, col2 = st.columns(2)
+st.divider()
+
+# --------------------------------------------------
+# 분석 기준 설정
+# --------------------------------------------------
+st.subheader("⚙ 분석 기준 설정")
+
+col1, col2, col3 = st.columns(3)
 
 with col1:
-    similarity_threshold = st.slider(
-        "🚨 표절 의심 기준 (%)",
-        50, 100, 75
-    )
+    similarity_threshold = st.slider("🚨 표절 기준 (%)", 50, 100, 75)
 
 with col2:
-    min_char_threshold = st.number_input(
-        "📉 최소 글자 수 기준",
-        min_value=0,
-        value=800
-    )
+    min_char_threshold = st.number_input("📏 최소 글자 수", min_value=0, value=800)
+
+with col3:
+    char_option = st.radio("글자 수 기준",
+                           ["공백 포함", "공백 제외"])
+
+lecture_topic = st.text_input("🎓 강의 주제 입력 (선택)")
+topic_threshold = st.slider(
+    "📚 주제 적합도 하한선 (너무 낮은 경우만 표시)",
+    0.00, 0.20, 0.05, 0.01
+)
+
+st.divider()
 
 uploaded_zip = st.file_uploader("📂 ZIP 파일 업로드", type=["zip"])
 
-# ----------------------------
+# --------------------------------------------------
 # 함수
-# ----------------------------
+# --------------------------------------------------
 
 def extract_name(filename):
     base = os.path.splitext(filename)[0]
-    parts = base.split("_")
-    first_part = parts[0]
-    name_match = re.match(r"[가-힣]+", first_part)
-    return name_match.group() if name_match else first_part
+    first = base.split("_")[0]
+    match = re.match(r"[가-힣]+", first)
+    return match.group() if match else first
 
 def extract_text_from_pdf(file_bytes):
     text = ""
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + " "
+            t = page.extract_text()
+            if t:
+                text += t + " "
     return text
 
 def clean_text(text):
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 def remove_layout(text, layout):
     for line in layout.split("\n"):
@@ -117,6 +122,11 @@ def remove_layout(text, layout):
             text = text.replace(line, "")
     return text
 
+def count_chars(text, include_space=True):
+    if include_space:
+        return len(text)
+    return len(text.replace(" ", ""))
+
 def get_common_terms(text1, text2):
     words1 = text1.split()
     words2 = text2.split()
@@ -124,126 +134,124 @@ def get_common_terms(text1, text2):
     bigrams1 = [" ".join(words1[i:i+2]) for i in range(len(words1)-1)]
     bigrams2 = [" ".join(words2[i:i+2]) for i in range(len(words2)-1)]
 
-    counter1 = Counter(bigrams1)
-    counter2 = Counter(bigrams2)
+    c1, c2 = Counter(bigrams1), Counter(bigrams2)
 
     common = []
-    for term in counter1:
-        if term in counter2:
-            freq = min(counter1[term], counter2[term])
+    for term in c1:
+        if term in c2:
+            freq = min(c1[term], c2[term])
             if freq >= 3:
                 common.append((term, freq))
 
     common.sort(key=lambda x: x[1], reverse=True)
     return common[:15]
 
-# ----------------------------
+def calculate_topic_similarity(topic, student_texts):
+    results = {}
+    if not topic.strip():
+        return results
+
+    documents = [topic] + list(student_texts.values())
+    vectorizer = TfidfVectorizer()
+    tfidf = vectorizer.fit_transform(documents)
+    sim_matrix = cosine_similarity(tfidf)
+
+    for i, name in enumerate(student_texts.keys()):
+        results[name] = sim_matrix[0][i+1]
+
+    return results
+
+# --------------------------------------------------
 # 분석 시작
-# ----------------------------
-if uploaded_zip:
+# --------------------------------------------------
 
-    if st.button("🚀 채점 분석 시작"):
+if uploaded_zip and st.button("🚀 채점 분석 시작"):
 
-        with st.spinner("🔍 한인교 채점 분석 중... 잠시만 기다려주세요..."):
+    with st.spinner("🔍 분석 중... 잠시만 기다려주세요..."):
 
-            zip_bytes = uploaded_zip.read()
-            zip_file = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        zip_bytes = uploaded_zip.read()
+        zip_file = zipfile.ZipFile(io.BytesIO(zip_bytes))
 
-            students = []
-            original_lengths = {}
-            cleaned_lengths = {}
-            texts = {}
+        students = []
+        texts = {}
+        original_inc, original_exc = {}, {}
+        cleaned_inc, cleaned_exc = {}, {}
 
-            for file in zip_file.namelist():
-                if file.endswith(".pdf"):
+        for file in zip_file.namelist():
+            if file.endswith(".pdf"):
+                name = extract_name(file)
 
-                    name = extract_name(file)
-                    file_bytes = zip_file.read(file)
+                raw = clean_text(
+                    extract_text_from_pdf(zip_file.read(file))
+                )
 
-                    raw_text = extract_text_from_pdf(file_bytes)
-                    raw_text = clean_text(raw_text)
+                cleaned = clean_text(
+                    remove_layout(raw, layout_text)
+                )
 
-                    cleaned = remove_layout(raw_text, layout_text)
-                    cleaned = clean_text(cleaned)
+                students.append(name)
+                texts[name] = cleaned
 
-                    students.append(name)
-                    original_lengths[name] = len(raw_text)
-                    cleaned_lengths[name] = len(cleaned)
-                    texts[name] = cleaned
+                original_inc[name] = count_chars(raw, True)
+                original_exc[name] = count_chars(raw, False)
+                cleaned_inc[name] = count_chars(cleaned, True)
+                cleaned_exc[name] = count_chars(cleaned, False)
 
-            # ----------------------------
-            # 글자 수 결과
-            # ----------------------------
-            st.subheader("📊 레이아웃 제거 전/후 글자 수")
+        # --------------------------------------------------
+        # 표절 분석
+        # --------------------------------------------------
+        plagiarism_flag = {name: "정상" for name in students}
 
-            df_lengths = pd.DataFrame({
-                "이름": students,
-                "제거 전 글자 수": [original_lengths[n] for n in students],
-                "제거 후 글자 수": [cleaned_lengths[n] for n in students],
-            })
+        if len(texts) > 1:
+            vectorizer = TfidfVectorizer()
+            tfidf = vectorizer.fit_transform(texts.values())
+            sim_matrix = cosine_similarity(tfidf)
 
-            st.dataframe(df_lengths, use_container_width=True)
+            for i, j in combinations(range(len(students)), 2):
+                score = sim_matrix[i][j] * 100
+                if score >= similarity_threshold:
+                    n1, n2 = students[i], students[j]
+                    plagiarism_flag[n1] = "🚨 의심"
+                    plagiarism_flag[n2] = "🚨 의심"
 
-            # ----------------------------
-            # 기준 미달 표시
-            # ----------------------------
-            st.subheader("📉 최소 글자 수 기준 미달")
+        # --------------------------------------------------
+        # 주제 적합도
+        # --------------------------------------------------
+        topic_scores = calculate_topic_similarity(lecture_topic, texts)
 
-            below = [
-                n for n in students
-                if cleaned_lengths[n] < min_char_threshold
-            ]
+        # --------------------------------------------------
+        # 전체 요약 테이블
+        # --------------------------------------------------
+        summary = []
 
-            if below:
-                for n in below:
-                    st.error(f"🔴 {n} — {cleaned_lengths[n]}자")
+        for name in students:
+
+            length_val = cleaned_inc[name] if char_option == "공백 포함" else cleaned_exc[name]
+            length_status = "🔴 미달" if length_val < min_char_threshold else "✅"
+
+            if lecture_topic.strip():
+                score = topic_scores.get(name, 0)
+                topic_status = "⚠ 낮음" if score < topic_threshold else "✅"
             else:
-                st.success("✅ 기준 미달 학생 없음")
+                topic_status = "-"
 
-            # ----------------------------
-            # 표절 분석
-            # ----------------------------
-            st.subheader("🚨 표절 의심 분석 결과")
+            final_flag = "검토 필요" if (
+                length_status != "✅"
+                or plagiarism_flag[name] != "정상"
+                or topic_status != "✅"
+            ) else "정상"
 
-            if len(texts) > 1:
+            summary.append([
+                name,
+                length_status,
+                plagiarism_flag[name],
+                topic_status,
+                final_flag
+            ])
 
-                vectorizer = TfidfVectorizer()
-                tfidf = vectorizer.fit_transform(texts.values())
-                similarity_matrix = cosine_similarity(tfidf)
-
-                suspicious_found = False
-
-                for i, j in combinations(range(len(students)), 2):
-                    sim_score = similarity_matrix[i][j] * 100
-
-                    if sim_score >= similarity_threshold:
-
-                        suspicious_found = True
-                        name1 = students[i]
-                        name2 = students[j]
-
-                        st.warning(
-                            f"🚨 {name1} ↔ {name2} — {sim_score:.1f}%"
-                        )
-
-                        with st.expander("📌 왜 유사한지 보기"):
-                            common_terms = get_common_terms(
-                                texts[name1],
-                                texts[name2]
-                            )
-
-                            if common_terms:
-                                df_common = pd.DataFrame(
-                                    common_terms,
-                                    columns=["공통 표현", "겹친 횟수"]
-                                )
-                                st.dataframe(df_common,
-                                             use_container_width=True)
-                            else:
-                                st.write("특이하게 많이 겹친 표현은 없음.")
-
-                if not suspicious_found:
-                    st.success("✅ 기준 이상 유사 조합 없음")
-
-            else:
-                st.info("학생 수가 2명 이상이어야 표절 분석 가능")
+        st.subheader("📊 전체 분석 요약")
+        df_summary = pd.DataFrame(
+            summary,
+            columns=["이름", "글자수", "표절", "주제 적합도", "최종 상태"]
+        )
+        st.dataframe(df_summary, use_container_width=True)
