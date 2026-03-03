@@ -47,7 +47,7 @@ topic_threshold = st.number_input(
     "주제 적합도 경고 기준 (0~1)",
     min_value=0.0,
     max_value=1.0,
-    value=0.02,
+    value=0.01,
     step=0.01
 )
 
@@ -74,15 +74,20 @@ uploaded_zip = st.file_uploader("ZIP 파일 업로드", type="zip")
 # -----------------------------
 # 함수 정의
 # -----------------------------
+
+# 🔥 숫자가 시작되는 지점 전까지를 이름으로 추출
 def extract_name_from_filename(filename):
     base = os.path.splitext(filename)[0]
-    return base.split("_")[0][:3]
+    match = re.search(r"\d", base)
+    if match:
+        return base[:match.start()].strip()
+    return base.strip()
 
 def extract_name_from_content(text):
     head = text[:300]
-    match = re.search(r"이름과\s*학번[:\s]*([가-힣]{2,4})", head)
+    match = re.search(r"이름과\s*학번[:\s]*([^\d\s]+)", head)
     if match:
-        return match.group(1)
+        return match.group(1).strip()
     return None
 
 def clean_layout(text, layout_patterns):
@@ -183,7 +188,6 @@ if uploaded_zip and st.button("🚀 분석 실행"):
         summary_rows = []
 
         for name in names:
-
             actual = lengths[name]["after_with"] if count_space == "공백 포함" else lengths[name]["after_without"]
             meets = actual >= min_length
 
