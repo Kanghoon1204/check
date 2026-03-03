@@ -1,6 +1,5 @@
 import streamlit as st
 import zipfile
-import pdfplumber
 import re
 import tempfile
 import os
@@ -8,11 +7,16 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+# ----------------------------
+# 기본 설정
+# ----------------------------
 st.set_page_config(
     page_title="한동인성교육 채점 시스템",
     page_icon="📘",
     layout="wide"
 )
+
+st.title("📘 한동인성교육 채점 시스템 (안정화 버전)")
 
 # ----------------------------
 # 기본 공통 레이아웃 텍스트
@@ -30,19 +34,6 @@ DEFAULT_LAYOUT_TEXT = """이름과 학번:
 """
 
 # ----------------------------
-# UI
-# ----------------------------
-st.markdown("## 📘 한동인성교육 채점 시스템 (빠른 의심 탐지 버전)")
-
-with st.expander("📖 사용 방법"):
-    st.markdown("""
-1. 학생 PDF 파일을 ZIP으로 압축하여 업로드
-2. 분석 시작 클릭
-3. 글자 수 및 75% 이상 유사 조합 확인
-※ 실제 판정은 직접 PDF 확인 권장
-""")
-
-# ----------------------------
 # 사이드바 설정
 # ----------------------------
 st.sidebar.header("⚙️ 설정")
@@ -53,7 +44,7 @@ similarity_threshold = st.sidebar.slider(
     "표절 의심 기준 (%)",
     min_value=30,
     max_value=100,
-    value=75  # 🔥 기본값 75%
+    value=75
 )
 
 min_char_limit = st.sidebar.number_input(
@@ -70,13 +61,29 @@ top_n = st.sidebar.slider(
     value=10
 )
 
-st.sidebar.subheader("🧹 공통 레이아웃 제거 설정")
+st.sidebar.subheader("🧹 공통 레이아웃 제거")
 
 layout_text_input = st.sidebar.text_area(
-    "글자 수 및 표절 분석에서 제외할 공통 텍스트",
+    "제외할 공통 텍스트",
     value=DEFAULT_LAYOUT_TEXT,
-    height=220
+    height=200
 )
+
+# ----------------------------
+# PDF 텍스트 추출 (pdfplumber 없이 안정적 처리)
+# ----------------------------
+def extract_text_from_pdf(path):
+    try:
+        import pdfplumber
+        text = ""
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text()
+                if t:
+                    text += t + "\n"
+        return text
+    except:
+        return ""
 
 # ----------------------------
 # 이름 추출
@@ -85,34 +92,22 @@ def extract_name(filename):
     name_only = os.path.splitext(filename)[0]
     match = re.match(r"([^\d]+)", name_only)
     if match:
-        return match.group(1).replace(" ", "").strip()
+        return match.group(1).strip()
     return name_only
-
-# ----------------------------
-# PDF 텍스트 추출
-# ----------------------------
-def extract_text(path):
-    text = ""
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                text += t + "\n"
-    return text
 
 # ----------------------------
 # 공통 레이아웃 제거
 # ----------------------------
 def remove_common_layout(text, layout_text):
-    layout_lines = [line.strip() for line in layout_text.split("\n") if line.strip()]
-    for line in layout_lines:
+    lines = [line.strip() for line in layout_text.split("\n") if line.strip()]
+    for line in lines:
         text = text.replace(line, "")
     return text
 
 # ----------------------------
 # 분석 시작
 # ----------------------------
-if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
+if uploaded_zip and st.button("🚀 분석 시작"):
 
     with tempfile.TemporaryDirectory() as tmpdir:
 
@@ -120,8 +115,12 @@ if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
         with open(zip_path, "wb") as f:
             f.write(uploaded_zip.read())
 
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(tmpdir)
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(tmpdir)
+        except:
+            st.error("ZIP 파일이 손상되었거나 잘못되었습니다.")
+            st.stop()
 
         pdf_files = []
         for root, _, files in os.walk(tmpdir):
@@ -130,7 +129,7 @@ if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
                     pdf_files.append(os.path.join(root, file))
 
         if len(pdf_files) < 2:
-            st.warning("최소 2개 이상 필요")
+            st.warning("PDF 파일이 2개 이상 필요합니다.")
             st.stop()
 
         texts = []
@@ -138,14 +137,23 @@ if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
         char_counts = []
 
         for path in pdf_files:
+            text = extract_text_from_pdf(path)
+            if not text.strip():
+                continue
 
-            text = extract_text(path)
             text = remove_common_layout(text, layout_text_input)
-            text = re.sub(r'\s+', ' ', text).strip()
+            text = re.sub(r"\s+", " ", text).strip()
+
+            if len(text) < 50:
+                continue
 
             texts.append(text)
             names.append(extract_name(os.path.basename(path)))
             char_counts.append(len(text.replace(" ", "")))
+
+        if len(texts) < 2:
+            st.warning("유효한 텍스트가 부족합니다.")
+            st.stop()
 
         # ----------------------------
         # 글자 수 출력
@@ -157,29 +165,27 @@ if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
             "글자 수": char_counts
         })
 
-        def highlight_short(val):
-            if val < min_char_limit:
-                return "background-color:#ffcccc;"
-            return ""
+        df["기준 미달"] = df["글자 수"] < min_char_limit
 
-        st.dataframe(
-            df.style.applymap(highlight_short, subset=["글자 수"]),
-            use_container_width=True
-        )
+        st.dataframe(df, use_container_width=True)
 
         # ----------------------------
-        # 표절 의심 분석 (문서 전체)
+        # 표절 의심 분석
         # ----------------------------
         st.subheader(f"🚨 {similarity_threshold}% 이상 유사 조합")
 
-        vectorizer = TfidfVectorizer(
-            ngram_range=(1,2),
-            min_df=1,
-            max_df=0.9
-        )
+        try:
+            vectorizer = TfidfVectorizer(
+                ngram_range=(1,2),
+                max_df=0.9
+            )
 
-        tfidf = vectorizer.fit_transform(texts)
-        sim_matrix = cosine_similarity(tfidf)
+            tfidf = vectorizer.fit_transform(texts)
+            sim_matrix = cosine_similarity(tfidf)
+
+        except Exception as e:
+            st.error("텍스트 벡터화 중 오류 발생")
+            st.stop()
 
         results = []
 
@@ -194,15 +200,5 @@ if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
         if not results:
             st.success("기준 이상 유사 조합 없음 🎉")
         else:
-            for idx, (n1, n2, score) in enumerate(results[:top_n], start=1):
-
-                if score >= 85:
-                    color = "🔴"
-                elif score >= 75:
-                    color = "🟠"
-                else:
-                    color = "🟡"
-
-                st.markdown(f"""
-**{idx}. {color} {n1} ↔ {n2} — {score}%**
-""")
+            for idx, (n1, n2, score) in enumerate(results[:top_n], 1):
+                st.write(f"{idx}. {n1} ↔ {n2} — {score}%")
