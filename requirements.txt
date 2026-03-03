@@ -2,4 +2,3 @@ streamlit
 pdfplumber
 scikit-learn
 pandas
-xlsxwriter
