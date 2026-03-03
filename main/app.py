@@ -1,41 +1,35 @@
 import streamlit as st
-import re
-import os
+import zipfile
 import tempfile
+import os
+import re
 import itertools
 import pandas as pd
 from difflib import SequenceMatcher
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 
 st.set_page_config(page_title="한동인성교육 채점 시스템", layout="wide")
 
-# -----------------------------
-# 제목
-# -----------------------------
 st.title("📘 한동인성교육 채점 시스템 (for 예림 하영)")
 
 # -----------------------------
 # 사용 설명
 # -----------------------------
-with st.expander("📖 사용 설명", expanded=False):
+with st.expander("📖 사용 설명"):
     st.markdown("""
-    1. PDF 파일 여러 개 업로드
-    2. 레이아웃 제거 문구 확인/수정
-    3. 글자수 기준 및 공백 포함 여부 선택
-    4. 표절 기준 설정
-    5. 강의 주제 입력 (선택)
-    6. 분석 실행
+    1. ZIP 파일 업로드 (PDF 포함)
+    2. 레이아웃 제거 문구 확인
+    3. 기준 설정
+    4. 분석 실행
 
-    ✔ 글자수는 레이아웃 제거 후 기준으로 판정  
+    ✔ 글자수는 레이아웃 제거 후 기준  
     ✔ 표절도는 레이아웃 제거 후 텍스트 기준  
-    ✔ 주제 적합도는 매우 낮은 경우만 검토 권장
+    ✔ 주제 적합도는 매우 낮은 경우만 경고
     """)
 
 # -----------------------------
-# 설정 영역
+# 설정
 # -----------------------------
-st.subheader("⚙ 분석 설정")
-
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -45,9 +39,17 @@ with col2:
     count_space = st.radio("글자수 계산 방식", ["공백 포함", "공백 제외"])
 
 with col3:
-    plag_threshold = st.slider("표절 의심 기준 (%)", 50, 100, 75)
+    plag_threshold = st.slider("표절 기준 (%)", 50, 100, 75)
 
 topic_input = st.text_input("강의 주제 입력 (선택)")
+
+topic_threshold = st.number_input(
+    "주제 적합도 경고 기준 (0~1)",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.02,
+    step=0.01
+)
 
 st.markdown("---")
 
@@ -60,22 +62,17 @@ default_layout = """이름과 학번:
 1. 강의 내용 요약
 2. 질문과 논의사항
 3. 강의를 통한 자기 성찰
-
-[작성안내]
-위 1번, 2번, 3번 항목에 대하여 총 한글 300단어 이상 혹은 800자 이상으로
-작성하시기 바랍니다. 참고를 위하여, 제출한 강의노트는 해당 강의를 하셨던
-교수님께 전달될 수 있습니다.
 """
 
-layout_text = st.text_area("레이아웃 제거 문구 (편집 가능)", default_layout, height=200)
+layout_text = st.text_area("레이아웃 제거 문구", default_layout, height=150)
 
 # -----------------------------
-# 파일 업로드
+# ZIP 업로드
 # -----------------------------
-uploaded_files = st.file_uploader("PDF 파일 업로드", type="pdf", accept_multiple_files=True)
+uploaded_zip = st.file_uploader("ZIP 파일 업로드", type="zip")
 
 # -----------------------------
-# 함수 정의
+# 함수
 # -----------------------------
 def extract_name_from_filename(filename):
     base = os.path.splitext(filename)[0]
@@ -111,53 +108,64 @@ def topic_similarity(text, topic):
 # -----------------------------
 # 분석 실행
 # -----------------------------
-if uploaded_files and st.button("🚀 분석 실행"):
+if uploaded_zip and st.button("🚀 분석 실행"):
 
-    with st.spinner("📊 분석 중입니다... 잠시만 기다려주세요."):
-        
+    with st.spinner("📊 ZIP 내부 PDF 분석 중입니다..."):
+
         texts = {}
         lengths = {}
-        name_mismatch = {}
         topic_scores = {}
+        name_mismatch = {}
 
-        # PDF 처리
-        for file in uploaded_files:
-            reader = PdfReader(file)
-            raw_text = ""
-            for page in reader.pages:
-                raw_text += page.extract_text() or ""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = os.path.join(tmpdir, "upload.zip")
 
-            name = extract_name_from_filename(file.name)
+            with open(zip_path, "wb") as f:
+                f.write(uploaded_zip.read())
 
-            content_name = extract_name_from_content(raw_text)
-            if content_name and content_name != name:
-                name_mismatch[name] = content_name
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(tmpdir)
 
-            cleaned = clean_layout(raw_text, layout_text)
+            for root, _, files in os.walk(tmpdir):
+                for file in files:
+                    if file.lower().endswith(".pdf"):
 
-            bw, bwo = calc_lengths(raw_text)
-            aw, awo = calc_lengths(cleaned)
+                        file_path = os.path.join(root, file)
 
-            lengths[name] = {
-                "before_with": bw,
-                "before_without": bwo,
-                "after_with": aw,
-                "after_without": awo
-            }
+                        reader = PdfReader(file_path)
+                        raw_text = ""
+                        for page in reader.pages:
+                            raw_text += page.extract_text() or ""
 
-            texts[name] = cleaned
+                        name = extract_name_from_filename(file)
 
-            ts = topic_similarity(cleaned, topic_input)
-            if ts is not None:
-                topic_scores[name] = ts
+                        content_name = extract_name_from_content(raw_text)
+                        if content_name and content_name != name:
+                            name_mismatch[name] = content_name
 
-        # -----------------------------
-        # 표절 검사 (제거 후 기준)
-        # -----------------------------
+                        cleaned = clean_layout(raw_text, layout_text)
+
+                        bw, bwo = calc_lengths(raw_text)
+                        aw, awo = calc_lengths(cleaned)
+
+                        lengths[name] = {
+                            "before_with": bw,
+                            "before_without": bwo,
+                            "after_with": aw,
+                            "after_without": awo
+                        }
+
+                        texts[name] = cleaned
+
+                        ts = topic_similarity(cleaned, topic_input)
+                        if ts is not None:
+                            topic_scores[name] = ts
+
+        # 표절 검사
         suspicious = []
         plag_details = []
-
         names = list(texts.keys())
+
         for a, b in itertools.combinations(names, 2):
             score = similarity(texts[a], texts[b])
             if score * 100 >= plag_threshold:
@@ -166,103 +174,52 @@ if uploaded_files and st.button("🚀 분석 실행"):
 
         suspicious = list(set(suspicious))
 
-        # -----------------------------
-        # 메인 요약 테이블
-        # -----------------------------
+        # 요약 테이블
         summary_rows = []
 
         for name in names:
-
-            if count_space == "공백 포함":
-                actual = lengths[name]["after_with"]
-            else:
-                actual = lengths[name]["after_without"]
-
+            actual = lengths[name]["after_with"] if count_space == "공백 포함" else lengths[name]["after_without"]
             meets = actual >= min_length
 
-            length_display = f"{actual}자"
-            if meets:
-                length_display += " ✅"
-            else:
-                length_display += " 🔴"
-
+            length_display = f"{actual}자 {'✅' if meets else '🔴'}"
             plag_status = "⚠ 의심" if name in suspicious else "정상"
 
-            summary_rows.append([
-                name,
-                length_display,
-                plag_status
-            ])
+            summary_rows.append([name, length_display, plag_status])
 
-        df_summary = pd.DataFrame(
-            summary_rows,
-            columns=["이름", "글자수", "표절"]
-        )
+        df_summary = pd.DataFrame(summary_rows, columns=["이름", "글자수", "표절"])
 
         st.subheader("📊 전체 분석 요약")
         st.dataframe(df_summary, use_container_width=True)
 
-        # -----------------------------
-        # 글자수 상세 보기
-        # -----------------------------
+        # 글자수 상세
         with st.expander("🔎 글자수 상세 보기"):
             for name in names:
                 st.markdown(f"### {name}")
-                st.write(
-                    f"""
-제거전: {lengths[name]["before_with"]}자(공백포함) /
-        {lengths[name]["before_without"]}자(공백제외)
+                st.write(f"""
+제거전: {lengths[name]["before_with"]} / {lengths[name]["before_without"]}
+제거후: {lengths[name]["after_with"]} / {lengths[name]["after_without"]}
+                """)
 
-제거후: {lengths[name]["after_with"]}자(공백포함) /
-        {lengths[name]["after_without"]}자(공백제외)
-                    """
-                )
-
-        # -----------------------------
-        # 표절 상세 보기
-        # -----------------------------
+        # 표절 상세
         if plag_details:
             with st.expander("⚠ 표절 의심 상세 보기"):
-                df_plag = pd.DataFrame(
-                    plag_details,
-                    columns=["학생 A", "학생 B", "유사도 (%)"]
-                )
+                df_plag = pd.DataFrame(plag_details, columns=["학생 A", "학생 B", "유사도 (%)"])
                 st.dataframe(df_plag, use_container_width=True)
 
-        # -----------------------------
-        # 주제 적합도 섹션
-        # -----------------------------
+        # 주제 적합도
         if topic_scores:
             st.subheader("📚 주제 적합도 분석")
-
             topic_rows = []
             for name, score in topic_scores.items():
-                percent = round(score * 100, 1)
-                if percent < 10:
-                    status = "⚠ 매우 낮음"
-                    action = "직접 검토 권장"
-                else:
-                    status = "정상"
-                    action = "-"
+                percent = round(score*100,1)
+                status = "⚠ 매우 낮음" if score < topic_threshold else "정상"
+                topic_rows.append([name, f"{percent}%", status])
 
-                topic_rows.append([
-                    name,
-                    f"{percent}%",
-                    status,
-                    action
-                ])
-
-            df_topic = pd.DataFrame(
-                topic_rows,
-                columns=["이름", "주제 유사도", "판정", "권장 조치"]
-            )
-
+            df_topic = pd.DataFrame(topic_rows, columns=["이름", "주제 유사도", "판정"])
             st.dataframe(df_topic, use_container_width=True)
 
-        # -----------------------------
-        # 이름 불일치 경고
-        # -----------------------------
+        # 이름 불일치
         if name_mismatch:
             st.subheader("⚠ 파일명-본문 이름 불일치 감지")
-            for fname, cname in name_mismatch.items():
-                st.warning(f"파일명: {fname} / 본문 추출 이름: {cname}")
+            for f, c in name_mismatch.items():
+                st.warning(f"파일명: {f} / 본문 이름: {c}")
