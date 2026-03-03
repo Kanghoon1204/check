@@ -15,12 +15,13 @@ st.set_page_config(
 )
 
 # ----------------------------
-# 🎨 UI 스타일 (모바일 최적화 포함)
+# 🎨 UI 개선 CSS (잘림 해결 포함)
 # ----------------------------
 st.markdown("""
 <style>
+header {visibility: hidden;}
 .block-container {
-    padding-top: 1rem;
+    padding-top: 1rem !important;
     padding-bottom: 2rem;
 }
 .big-title {
@@ -28,6 +29,7 @@ st.markdown("""
     font-size:28px;
     font-weight:700;
     color:#1f4e79;
+    margin-top:0px;
 }
 .sub-title {
     text-align:center;
@@ -42,6 +44,39 @@ st.markdown("""
 
 st.markdown("<div class='big-title'>📘 한동인성교육 채점 시스템</div>", unsafe_allow_html=True)
 st.markdown("<div class='sub-title'>for 예림 · 하영</div>", unsafe_allow_html=True)
+
+# ----------------------------
+# 📘 사용 설명 섹션
+# ----------------------------
+with st.expander("📖 사용 방법 안내 (클릭하여 열기)"):
+
+    st.markdown("""
+### 1️⃣ PDF 제출 파일 준비
+- 학생 PDF 파일들을 하나의 폴더에 모은 후 ZIP으로 압축합니다.
+- 파일명 형식: **이름 + 학번 + 기타정보**
+  - 예: `박사무엘22500265_...pdf`
+
+### 2️⃣ ZIP 파일 업로드
+- 왼쪽 설정 메뉴에서 ZIP 파일 업로드
+
+### 3️⃣ 채점 기준 설정
+- 표절 의심 기준 퍼센트 설정
+- 최소 글자 수 기준 설정
+- 기본 레이아웃 제외 여부 설정
+
+### 4️⃣ 분석 실행
+- '분석 시작' 버튼 클릭
+- 자동으로:
+  - PDF 텍스트 추출
+  - 레이아웃 제거
+  - 글자 수 계산
+  - 파일 간 유사도 분석
+
+### 5️⃣ 결과 확인
+- 글자 수 미달은 빨간색 표시
+- 기준 이상 유사도는 표절 의심으로 표시
+- 엑셀 다운로드 가능
+""")
 
 # ----------------------------
 # ⚙️ 사이드바 설정
@@ -69,7 +104,7 @@ default_layout_text = """이름과 학번:
 """
 
 layout_block = st.sidebar.text_area(
-    "글자 수 계산 시 제외할 블록 (편집 가능)",
+    "글자 수 계산 시 제외할 블록",
     value=default_layout_text,
     height=200
 )
@@ -77,7 +112,7 @@ layout_block = st.sidebar.text_area(
 apply_layout_removal = st.sidebar.checkbox("레이아웃 제거 적용", value=True)
 
 # ----------------------------
-# 📛 이름 추출 함수 (최종 확정 버전)
+# 이름 추출 함수
 # ----------------------------
 def extract_name(filename):
     name_only = os.path.splitext(filename)[0]
@@ -87,7 +122,7 @@ def extract_name(filename):
     return name_only
 
 # ----------------------------
-# 📄 PDF 텍스트 추출
+# PDF 텍스트 추출
 # ----------------------------
 def extract_text(path):
     text = ""
@@ -102,7 +137,7 @@ def extract_text(path):
     return text
 
 # ----------------------------
-# 🚀 분석 시작
+# 분석 시작
 # ----------------------------
 if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
 
@@ -125,20 +160,18 @@ if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
                     pdf_files.append(os.path.join(root, file))
 
         if len(pdf_files) < 2:
-            st.warning("⚠️ 최소 2개 이상의 PDF 파일이 필요합니다.")
+            st.warning("⚠️ 최소 2개 이상의 PDF 필요")
             st.stop()
 
         raw_texts = []
         names = []
 
-        # 1단계
         status.text("① PDF 텍스트 추출 중...")
         for path in pdf_files:
             raw_texts.append(extract_text(path))
             names.append(extract_name(os.path.basename(path)))
-        progress.progress(30)
+        progress.progress(40)
 
-        # 2단계
         status.text("② 레이아웃 제거 적용 중...")
         before_counts = []
         after_counts = []
@@ -155,19 +188,18 @@ if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
             after_counts.append(len(cleaned))
             processed_docs.append(text)
 
-        progress.progress(60)
+        progress.progress(70)
 
-        # 3단계
         status.text("③ 유사도 분석 중...")
         vectorizer = TfidfVectorizer()
         tfidf = vectorizer.fit_transform(processed_docs)
         sim = cosine_similarity(tfidf)
-        progress.progress(100)
 
+        progress.progress(100)
         status.text("✅ 분석 완료")
 
     # ----------------------------
-    # 📊 글자 수 결과
+    # 결과 출력
     # ----------------------------
     st.subheader("📊 글자 수 분석")
 
@@ -188,22 +220,14 @@ if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
         use_container_width=True
     )
 
-    # ----------------------------
-    # 🚨 표절 의심 결과
-    # ----------------------------
     st.subheader("🚨 표절 의심 분석")
 
     suspect_rows = []
-
     for i in range(len(names)):
         for j in range(i + 1, len(names)):
             score = sim[i][j] * 100
             if score >= threshold:
-                suspect_rows.append([
-                    names[i],
-                    names[j],
-                    round(score, 2)
-                ])
+                suspect_rows.append([names[i], names[j], round(score,2)])
 
     if not suspect_rows:
         st.success("의심 파일 없음 🎉")
@@ -213,24 +237,3 @@ if uploaded_zip and st.button("🚀 분석 시작", use_container_width=True):
             columns=["이름1", "이름2", "유사도(%)"]
         )
         st.dataframe(suspect_df, use_container_width=True)
-
-    # ----------------------------
-    # 📥 엑셀 다운로드
-    # ----------------------------
-    st.subheader("📥 결과 다운로드")
-
-    output_path = os.path.join(tempfile.gettempdir(), "한동인성교육_채점결과.xlsx")
-
-    with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
-        df.to_excel(writer, sheet_name="글자수", index=False)
-        if suspect_rows:
-            suspect_df.to_excel(writer, sheet_name="표절의심", index=False)
-
-    with open(output_path, "rb") as f:
-        st.download_button(
-            label="📥 엑셀 다운로드",
-            data=f,
-            file_name="한동인성교육_채점결과.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
