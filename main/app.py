@@ -23,9 +23,6 @@ threshold = st.slider("🚨 표절 의심 기준 (%)", 10, 100, 70)
 min_char_limit = st.number_input("📏 최소 글자 수 기준", 0, 10000, 1000)
 common_ratio = st.slider("📌 공통 문장 감지 비율 (%)", 50, 100, 70)
 
-toggle_remove_common = st.checkbox("공통 문장 자동 제거 적용")
-
-# --------------------------
 def extract_text(path):
     text = ""
     with pdfplumber.open(path) as pdf:
@@ -35,74 +32,88 @@ def extract_text(path):
                 text += t + "\n"
     return text
 
-# --------------------------
 if uploaded_zip and st.button("🔍 분석 시작"):
 
-    documents_raw = []
-    file_names = []
+    with st.status("🔄 분석 진행 중...", expanded=True) as status:
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+        documents_raw = []
+        file_names = []
 
-        zip_path = os.path.join(tmpdir, "upload.zip")
-        with open(zip_path, "wb") as f:
-            f.write(uploaded_zip.read())
+        status.write("📄 PDF 텍스트 추출 중...")
 
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(tmpdir)
+        with tempfile.TemporaryDirectory() as tmpdir:
 
-        pdf_files = []
-        for root, _, files in os.walk(tmpdir):
-            for file in files:
-                if file.endswith(".pdf"):
-                    pdf_files.append(os.path.join(root, file))
+            zip_path = os.path.join(tmpdir, "upload.zip")
+            with open(zip_path, "wb") as f:
+                f.write(uploaded_zip.read())
 
-        if len(pdf_files) < 2:
-            st.warning("최소 2개 이상 필요")
-            st.stop()
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(tmpdir)
 
-        for path in pdf_files:
-            text = extract_text(path)
-            documents_raw.append(text)
-            file_names.append(os.path.basename(path))
+            pdf_files = []
+            for root, _, files in os.walk(tmpdir):
+                for file in files:
+                    if file.endswith(".pdf"):
+                        pdf_files.append(os.path.join(root, file))
 
-    # --------------------------
-    # 공통 문장 탐지
-    # --------------------------
-    sentence_lists = []
-    for doc in documents_raw:
-        sentences = re.split(r"[.!?\n]", doc)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
-        sentence_lists.append(sentences)
+            for path in pdf_files:
+                documents_raw.append(extract_text(path))
+                file_names.append(os.path.basename(path))
 
-    all_sentences = Counter()
+        status.write("🧠 공통 문장 분석 중...")
+
+        sentence_lists = []
+        for doc in documents_raw:
+            sentences = re.split(r"[.!?\n]", doc)
+            sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+            sentence_lists.append(sentences)
+
+        counter = Counter()
+        for sentences in sentence_lists:
+            for s in set(sentences):
+                counter[s] += 1
+
+        threshold_count = len(documents_raw) * (common_ratio / 100)
+        detected_common = [s for s, c in counter.items() if c >= threshold_count]
+
+        status.update(label="✏️ 공통 문장 편집 단계", state="complete")
+
+    # -------------------------
+    # 공통 문장 UI 표시
+    # -------------------------
+    st.header("📌 자동 감지된 공통 문장 (편집 가능)")
+
+    edited_common = []
+    for sentence in detected_common:
+        if st.checkbox(sentence, value=True):
+            edited_common.append(sentence)
+
+    custom_add = st.text_area("➕ 추가로 제거할 문장 직접 입력 (줄바꿈 구분)")
+    if custom_add:
+        edited_common.extend([s.strip() for s in custom_add.split("\n") if s.strip()])
+
+    # -------------------------
+    # 제거 전/후 글자 수 비교
+    # -------------------------
+    st.header("📊 글자 수 비교")
+
+    before_counts = []
+    after_counts = []
+    documents_filtered = []
+
     for sentences in sentence_lists:
-        unique = set(sentences)
-        for s in unique:
-            all_sentences[s] += 1
+        original_text = " ".join(sentences)
+        filtered = [s for s in sentences if s not in edited_common]
 
-    common_threshold = len(documents_raw) * (common_ratio / 100)
-    common_sentences = {s for s, c in all_sentences.items() if c >= common_threshold}
+        before_counts.append(len(re.sub(r"\s+", "", original_text)))
+        after_counts.append(len(re.sub(r"\s+", "", " ".join(filtered))))
+        documents_filtered.append(" ".join(filtered))
 
-    # --------------------------
-    # 제거 적용 여부
-    # --------------------------
-    documents = []
-
-    for sentences in sentence_lists:
-        if toggle_remove_common:
-            filtered = [s for s in sentences if s not in common_sentences]
-        else:
-            filtered = sentences
-        documents.append(" ".join(filtered))
-
-    # --------------------------
-    # 글자 수 비교
-    # --------------------------
-    char_counts = [len(re.sub(r"\s+", "", d)) for d in documents]
-
-    df_counts = pd.DataFrame({
+    df = pd.DataFrame({
         "파일명": file_names,
-        "글자 수": char_counts
+        "제거 전": before_counts,
+        "제거 후": after_counts,
+        "차이": [b - a for b, a in zip(before_counts, after_counts)]
     })
 
     def highlight_short(val):
@@ -110,17 +121,16 @@ if uploaded_zip and st.button("🔍 분석 시작"):
             return "background-color:#ffcccc;"
         return ""
 
-    st.header("📊 글자 수 (공통 제거 토글 반영)")
-    st.dataframe(df_counts.style.applymap(highlight_short, subset=["글자 수"]))
+    st.dataframe(df.style.applymap(highlight_short, subset=["제거 후"]))
 
-    # --------------------------
-    # 유사도 계산 (자기 자신 제외)
-    # --------------------------
-    vectorizer = TfidfVectorizer()
-    tfidf = vectorizer.fit_transform(documents)
-    sim = cosine_similarity(tfidf)
-
+    # -------------------------
+    # 유사도 계산
+    # -------------------------
     st.header("🚨 의심 파일 쌍")
+
+    vectorizer = TfidfVectorizer()
+    tfidf = vectorizer.fit_transform(documents_filtered)
+    sim = cosine_similarity(tfidf)
 
     found = False
     for i in range(len(file_names)):
