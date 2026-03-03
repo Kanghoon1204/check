@@ -6,7 +6,7 @@ import re
 import itertools
 import pandas as pd
 from difflib import SequenceMatcher
-from pypdf import PdfReader
+import pdfplumber
 
 st.set_page_config(page_title="한동인성교육 채점 시스템", layout="wide")
 
@@ -19,7 +19,7 @@ with st.expander("📖 사용 설명"):
     st.markdown("""
     1. ZIP 파일 업로드 (PDF 포함)
     2. 레이아웃 제거 문구 확인
-    3. 기준 설정
+    3. 글자수/표절/주제 기준 설정
     4. 분석 실행
 
     ✔ 글자수는 레이아웃 제거 후 기준  
@@ -28,7 +28,7 @@ with st.expander("📖 사용 설명"):
     """)
 
 # -----------------------------
-# 설정
+# 설정 영역
 # -----------------------------
 col1, col2, col3 = st.columns(3)
 
@@ -72,7 +72,7 @@ layout_text = st.text_area("레이아웃 제거 문구", default_layout, height=
 uploaded_zip = st.file_uploader("ZIP 파일 업로드", type="zip")
 
 # -----------------------------
-# 함수
+# 함수 정의
 # -----------------------------
 def extract_name_from_filename(filename):
     base = os.path.splitext(filename)[0]
@@ -118,6 +118,7 @@ if uploaded_zip and st.button("🚀 분석 실행"):
         name_mismatch = {}
 
         with tempfile.TemporaryDirectory() as tmpdir:
+
             zip_path = os.path.join(tmpdir, "upload.zip")
 
             with open(zip_path, "wb") as f:
@@ -132,10 +133,10 @@ if uploaded_zip and st.button("🚀 분석 실행"):
 
                         file_path = os.path.join(root, file)
 
-                        reader = PdfReader(file_path)
                         raw_text = ""
-                        for page in reader.pages:
-                            raw_text += page.extract_text() or ""
+                        with pdfplumber.open(file_path) as pdf:
+                            for page in pdf.pages:
+                                raw_text += page.extract_text() or ""
 
                         name = extract_name_from_filename(file)
 
@@ -161,7 +162,9 @@ if uploaded_zip and st.button("🚀 분석 실행"):
                         if ts is not None:
                             topic_scores[name] = ts
 
+        # -----------------------------
         # 표절 검사
+        # -----------------------------
         suspicious = []
         plag_details = []
         names = list(texts.keys())
@@ -174,10 +177,13 @@ if uploaded_zip and st.button("🚀 분석 실행"):
 
         suspicious = list(set(suspicious))
 
+        # -----------------------------
         # 요약 테이블
+        # -----------------------------
         summary_rows = []
 
         for name in names:
+
             actual = lengths[name]["after_with"] if count_space == "공백 포함" else lengths[name]["after_without"]
             meets = actual >= min_length
 
@@ -191,34 +197,46 @@ if uploaded_zip and st.button("🚀 분석 실행"):
         st.subheader("📊 전체 분석 요약")
         st.dataframe(df_summary, use_container_width=True)
 
+        # -----------------------------
         # 글자수 상세
+        # -----------------------------
         with st.expander("🔎 글자수 상세 보기"):
             for name in names:
                 st.markdown(f"### {name}")
                 st.write(f"""
-제거전: {lengths[name]["before_with"]} / {lengths[name]["before_without"]}
-제거후: {lengths[name]["after_with"]} / {lengths[name]["after_without"]}
+제거전: {lengths[name]["before_with"]} (공백포함) /
+        {lengths[name]["before_without"]} (공백제외)
+
+제거후: {lengths[name]["after_with"]} (공백포함) /
+        {lengths[name]["after_without"]} (공백제외)
                 """)
 
+        # -----------------------------
         # 표절 상세
+        # -----------------------------
         if plag_details:
             with st.expander("⚠ 표절 의심 상세 보기"):
                 df_plag = pd.DataFrame(plag_details, columns=["학생 A", "학생 B", "유사도 (%)"])
                 st.dataframe(df_plag, use_container_width=True)
 
+        # -----------------------------
         # 주제 적합도
+        # -----------------------------
         if topic_scores:
             st.subheader("📚 주제 적합도 분석")
+
             topic_rows = []
             for name, score in topic_scores.items():
-                percent = round(score*100,1)
+                percent = round(score * 100, 1)
                 status = "⚠ 매우 낮음" if score < topic_threshold else "정상"
                 topic_rows.append([name, f"{percent}%", status])
 
             df_topic = pd.DataFrame(topic_rows, columns=["이름", "주제 유사도", "판정"])
             st.dataframe(df_topic, use_container_width=True)
 
+        # -----------------------------
         # 이름 불일치
+        # -----------------------------
         if name_mismatch:
             st.subheader("⚠ 파일명-본문 이름 불일치 감지")
             for f, c in name_mismatch.items():
