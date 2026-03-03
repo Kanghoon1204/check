@@ -1,35 +1,51 @@
 import streamlit as st
 import zipfile
-import re
-import tempfile
 import os
+import re
+import io
+import fitz  # PyMuPDF
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from itertools import combinations
+from collections import Counter
 
 # ----------------------------
 # 기본 설정
 # ----------------------------
 st.set_page_config(
     page_title="한동인성교육 채점 시스템",
-    page_icon="📘",
     layout="wide"
 )
 
-# ----------------------------
-# 상단 타이틀 복구
-# ----------------------------
-st.markdown("""
-<h1 style='text-align:center;'>📘 한동인성교육 채점 시스템</h1>
-<h4 style='text-align:center; color:gray;'>for 예림 · 하영</h4>
-""", unsafe_allow_html=True)
-
-st.markdown("---")
+st.title("📘 한동인성교육 채점 시스템 (for 예림 · 하영)")
 
 # ----------------------------
-# 기본 공통 레이아웃 텍스트
+# 사용 설명
 # ----------------------------
-DEFAULT_LAYOUT_TEXT = """이름과 학번:
+with st.expander("📖 사용 방법 안내", expanded=False):
+    st.markdown("""
+### 사용 방법
+
+1️⃣ 학생 PDF 파일들을 ZIP으로 압축하여 업로드  
+2️⃣ 표절 의심 기준 설정 (기본 75%)  
+3️⃣ 최소 글자 수 설정  
+4️⃣ 분석 시작 클릭  
+
+### 분석 내용
+
+- 📊 레이아웃 제거 전/후 글자 수 비교
+- 🔴 기준 미달 학생 표시
+- 🚨 기준 이상 유사 조합 표시
+- 📌 왜 유사한지 공통 표현 확인 가능
+
+※ 표절도는 **레이아웃 제거 후 텍스트** 기준으로 계산됩니다.
+""")
+
+# ----------------------------
+# 기본 레이아웃 제거 텍스트
+# ----------------------------
+default_layout = """이름과 학번:
 작성일자:
 강의주제:
 1. 강의 내용 요약
@@ -37,190 +53,192 @@ DEFAULT_LAYOUT_TEXT = """이름과 학번:
 3. 강의를 통한 자기 성찰
 
 [작성안내]
-위 1번, 2번, 3번 항목에 대하여 총 한글 300단어 이상 혹은 800자 이상으로 작성하시기 바랍니다.
-참고를 위하여, 제출한 강의노트는 해당 강의를 하셨던 교수님께 전달될 수 있습니다.
+위 1번, 2번, 3번 항목에 대하여 총 한글 300단어 이상 혹은 800자 이상으로
+작성하시기 바랍니다. 참고를 위하여, 제출한 강의노트는 해당 강의를 하셨던
+교수님께 전달될 수 있습니다.
 """
 
-# ----------------------------
-# 사이드바 설정
-# ----------------------------
-st.sidebar.header("⚙️ 설정")
-
-uploaded_zip = st.sidebar.file_uploader("📦 PDF ZIP 업로드", type="zip")
-
-similarity_threshold = st.sidebar.slider(
-    "표절 의심 기준 (%)",
-    30, 100, 75
-)
-
-min_char_limit = st.sidebar.number_input(
-    "최소 글자 수 기준",
-    0, 10000, 800
-)
-
-top_n = st.sidebar.slider(
-    "최대 표시 조합 수",
-    3, 30, 10
-)
-
-st.sidebar.subheader("🧹 공통 레이아웃 제거")
-
-layout_text_input = st.sidebar.text_area(
-    "제외할 공통 텍스트",
-    value=DEFAULT_LAYOUT_TEXT,
-    height=200
+st.subheader("✂ 레이아웃 제거 설정")
+layout_text = st.text_area(
+    "글자 수 계산 및 표절 분석에서 제외할 공통 문구 (편집 가능)",
+    value=default_layout,
+    height=220
 )
 
 # ----------------------------
-# PDF 텍스트 추출
+# 설정 값
 # ----------------------------
-def extract_text_from_pdf(path):
-    try:
-        import pdfplumber
-        text = ""
-        with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
-                t = page.extract_text()
-                if t:
-                    text += t + "\n"
-        return text
-    except:
-        return ""
+col1, col2 = st.columns(2)
 
+with col1:
+    similarity_threshold = st.slider(
+        "🚨 표절 의심 기준 (%)",
+        min_value=50,
+        max_value=100,
+        value=75
+    )
+
+with col2:
+    min_char_threshold = st.number_input(
+        "📉 최소 글자 수 기준",
+        min_value=0,
+        value=800
+    )
+
+uploaded_zip = st.file_uploader("📂 ZIP 파일 업로드", type=["zip"])
+
+# ----------------------------
+# 함수
+# ----------------------------
 def extract_name(filename):
-    name_only = os.path.splitext(filename)[0]
-    match = re.match(r"([^\d]+)", name_only)
-    if match:
-        return match.group(1).strip()
-    return name_only
+    base = os.path.splitext(filename)[0]
+    parts = base.split("_")
+    first_part = parts[0]
+    name = re.match(r"[가-힣]+", first_part)
+    return name.group() if name else first_part
 
-def remove_common_layout(text, layout_text):
-    lines = [line.strip() for line in layout_text.split("\n") if line.strip()]
-    for line in lines:
-        text = text.replace(line, "")
+def extract_text_from_pdf(file_bytes):
+    text = ""
+    with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+        for page in doc:
+            text += page.get_text()
     return text
+
+def clean_text(text):
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+def remove_layout(text, layout):
+    for line in layout.split("\n"):
+        line = line.strip()
+        if line:
+            text = text.replace(line, "")
+    return text
+
+def get_common_terms(text1, text2):
+    words1 = text1.split()
+    words2 = text2.split()
+
+    bigrams1 = [" ".join(words1[i:i+2]) for i in range(len(words1)-1)]
+    bigrams2 = [" ".join(words2[i:i+2]) for i in range(len(words2)-1)]
+
+    counter1 = Counter(bigrams1)
+    counter2 = Counter(bigrams2)
+
+    common = []
+    for term in counter1:
+        if term in counter2:
+            freq = min(counter1[term], counter2[term])
+            if freq >= 3:
+                common.append((term, freq))
+
+    common.sort(key=lambda x: x[1], reverse=True)
+    return common[:15]
 
 # ----------------------------
 # 분석 시작
 # ----------------------------
-if uploaded_zip and st.button("🚀 채점 분석 시작", use_container_width=True):
+if uploaded_zip:
 
-    st.markdown("## 🔍 한인교 채점 분석 중입니다...")
-    progress = st.progress(0)
+    if st.button("🚀 채점 분석 시작"):
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+        with st.spinner("🔍 한인교 채점 분석 중... 잠시만 기다려주세요..."):
 
-        zip_path = os.path.join(tmpdir, "upload.zip")
-        with open(zip_path, "wb") as f:
-            f.write(uploaded_zip.read())
+            zip_bytes = uploaded_zip.read()
+            zip_file = zipfile.ZipFile(io.BytesIO(zip_bytes))
 
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(tmpdir)
+            students = []
+            original_lengths = {}
+            cleaned_lengths = {}
+            texts = {}
 
-        pdf_files = []
-        for root, _, files in os.walk(tmpdir):
-            for file in files:
-                if file.lower().endswith(".pdf"):
-                    pdf_files.append(os.path.join(root, file))
+            for file in zip_file.namelist():
+                if file.endswith(".pdf"):
+                    name = extract_name(file)
+                    file_bytes = zip_file.read(file)
 
-        if len(pdf_files) < 2:
-            st.warning("PDF 파일이 2개 이상 필요합니다.")
-            st.stop()
+                    raw_text = extract_text_from_pdf(file_bytes)
+                    raw_text = clean_text(raw_text)
 
-        texts = []
-        names = []
-        before_counts = []
-        after_counts = []
+                    cleaned = remove_layout(raw_text, layout_text)
+                    cleaned = clean_text(cleaned)
 
-        progress.progress(20)
+                    students.append(name)
+                    original_lengths[name] = len(raw_text)
+                    cleaned_lengths[name] = len(cleaned)
+                    texts[name] = cleaned
 
-        for path in pdf_files:
-            text = extract_text_from_pdf(path)
-            if not text.strip():
-                continue
+            # ----------------------------
+            # 글자 수 결과 표
+            # ----------------------------
+            st.subheader("📊 레이아웃 제거 전/후 글자 수")
 
-            before = len(re.sub(r"\s+", "", text))
-            cleaned = remove_common_layout(text, layout_text_input)
-            cleaned = re.sub(r"\s+", " ", cleaned).strip()
-            after = len(cleaned.replace(" ", ""))
+            df_lengths = pd.DataFrame({
+                "이름": students,
+                "제거 전 글자 수": [original_lengths[n] for n in students],
+                "제거 후 글자 수": [cleaned_lengths[n] for n in students],
+            })
 
-            if after < 50:
-                continue
+            st.dataframe(df_lengths, use_container_width=True)
 
-            texts.append(cleaned)
-            names.append(extract_name(os.path.basename(path)))
-            before_counts.append(before)
-            after_counts.append(after)
+            # 기준 미달 표시
+            st.subheader("📉 최소 글자 수 기준 미달")
 
-        progress.progress(50)
+            below = [
+                n for n in students
+                if cleaned_lengths[n] < min_char_threshold
+            ]
 
-        # ----------------------------
-        # 글자 수 분석
-        # ----------------------------
-        st.subheader("📊 글자 수 분석 (레이아웃 제거 전/후 비교)")
+            if below:
+                for n in below:
+                    st.error(f"🔴 {n} — {cleaned_lengths[n]}자")
+            else:
+                st.success("✅ 기준 미달 학생 없음")
 
-        df = pd.DataFrame({
-            "이름": names,
-            "제거 전 글자 수": before_counts,
-            "제거 후 글자 수": after_counts,
-        })
+            # ----------------------------
+            # 표절 분석
+            # ----------------------------
+            st.subheader("🚨 표절 의심 분석 결과")
 
-        df["제거된 분량"] = df["제거 전 글자 수"] - df["제거 후 글자 수"]
-        df["기준 충족 여부"] = df["제거 후 글자 수"].apply(
-            lambda x: "❌ 기준 미달" if x < min_char_limit else "✅ 충족"
-        )
+            if len(texts) > 1:
 
-        def highlight_row(row):
-            if row["제거 후 글자 수"] < min_char_limit:
-                return ["background-color:#ffcccc"] * len(row)
-            return [""] * len(row)
+                vectorizer = TfidfVectorizer()
+                tfidf = vectorizer.fit_transform(texts.values())
+                similarity_matrix = cosine_similarity(tfidf)
 
-        st.dataframe(
-            df.style.apply(highlight_row, axis=1),
-            use_container_width=True
-        )
+                suspicious_found = False
 
-        progress.progress(70)
+                for i, j in combinations(range(len(students)), 2):
+                    sim_score = similarity_matrix[i][j] * 100
 
-        # ----------------------------
-        # 표절 분석
-        # ----------------------------
-        st.subheader(f"🚨 {similarity_threshold}% 이상 유사 조합")
+                    if sim_score >= similarity_threshold:
 
-        vectorizer = TfidfVectorizer(
-            ngram_range=(1,2),
-            max_df=0.9
-        )
+                        suspicious_found = True
+                        name1 = students[i]
+                        name2 = students[j]
 
-        tfidf = vectorizer.fit_transform(texts)
-        sim_matrix = cosine_similarity(tfidf)
+                        st.warning(
+                            f"🚨 {name1} ↔ {name2} — {sim_score:.1f}%"
+                        )
 
-        results = []
+                        with st.expander("📌 왜 유사한지 보기"):
+                            common_terms = get_common_terms(
+                                texts[name1],
+                                texts[name2]
+                            )
 
-        for i in range(len(names)):
-            for j in range(i+1, len(names)):
-                score = sim_matrix[i][j] * 100
-                if score >= similarity_threshold:
-                    results.append((names[i], names[j], round(score,1)))
+                            if common_terms:
+                                df_common = pd.DataFrame(
+                                    common_terms,
+                                    columns=["공통 표현", "겹친 횟수"]
+                                )
+                                st.dataframe(df_common,
+                                             use_container_width=True)
+                            else:
+                                st.write("특이하게 많이 겹친 표현은 없음.")
 
-        results.sort(key=lambda x: x[2], reverse=True)
+                if not suspicious_found:
+                    st.success("✅ 기준 이상 유사 조합 없음")
 
-        progress.progress(100)
-
-        if not results:
-            st.success("기준 이상 유사 조합 없음 🎉")
-        else:
-            for idx, (n1, n2, score) in enumerate(results[:top_n], 1):
-
-                if score >= 90:
-                    color = "🔴"
-                elif score >= 80:
-                    color = "🟠"
-                else:
-                    color = "🟡"
-
-                st.markdown(
-                    f"### {idx}. {color} {n1} ↔ {n2} — {score}%"
-                )
-
-    st.success("✅ 분석 완료")
+            else:
+                st.info("학생 수가 2명 이상이어야 표절 분석 가능")
