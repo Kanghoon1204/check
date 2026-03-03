@@ -3,7 +3,7 @@ import zipfile
 import os
 import re
 import io
-import fitz  # PyMuPDF
+import pdfplumber
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -11,7 +11,7 @@ from itertools import combinations
 from collections import Counter
 
 # ----------------------------
-# 기본 설정
+# 페이지 설정
 # ----------------------------
 st.set_page_config(
     page_title="한동인성교육 채점 시스템",
@@ -29,7 +29,7 @@ with st.expander("📖 사용 방법 안내", expanded=False):
 
 1️⃣ 학생 PDF 파일들을 ZIP으로 압축하여 업로드  
 2️⃣ 표절 의심 기준 설정 (기본 75%)  
-3️⃣ 최소 글자 수 설정  
+3️⃣ 최소 글자 수 기준 설정  
 4️⃣ 분석 시작 클릭  
 
 ### 분석 내용
@@ -39,7 +39,7 @@ with st.expander("📖 사용 방법 안내", expanded=False):
 - 🚨 기준 이상 유사 조합 표시
 - 📌 왜 유사한지 공통 표현 확인 가능
 
-※ 표절도는 **레이아웃 제거 후 텍스트** 기준으로 계산됩니다.
+※ 표절도는 **레이아웃 제거 후 텍스트 기준**으로 계산됩니다.
 """)
 
 # ----------------------------
@@ -59,6 +59,7 @@ default_layout = """이름과 학번:
 """
 
 st.subheader("✂ 레이아웃 제거 설정")
+
 layout_text = st.text_area(
     "글자 수 계산 및 표절 분석에서 제외할 공통 문구 (편집 가능)",
     value=default_layout,
@@ -66,16 +67,14 @@ layout_text = st.text_area(
 )
 
 # ----------------------------
-# 설정 값
+# 기준 설정
 # ----------------------------
 col1, col2 = st.columns(2)
 
 with col1:
     similarity_threshold = st.slider(
         "🚨 표절 의심 기준 (%)",
-        min_value=50,
-        max_value=100,
-        value=75
+        50, 100, 75
     )
 
 with col2:
@@ -90,18 +89,21 @@ uploaded_zip = st.file_uploader("📂 ZIP 파일 업로드", type=["zip"])
 # ----------------------------
 # 함수
 # ----------------------------
+
 def extract_name(filename):
     base = os.path.splitext(filename)[0]
     parts = base.split("_")
     first_part = parts[0]
-    name = re.match(r"[가-힣]+", first_part)
-    return name.group() if name else first_part
+    name_match = re.match(r"[가-힣]+", first_part)
+    return name_match.group() if name_match else first_part
 
 def extract_text_from_pdf(file_bytes):
     text = ""
-    with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-        for page in doc:
-            text += page.get_text()
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + " "
     return text
 
 def clean_text(text):
@@ -154,6 +156,7 @@ if uploaded_zip:
 
             for file in zip_file.namelist():
                 if file.endswith(".pdf"):
+
                     name = extract_name(file)
                     file_bytes = zip_file.read(file)
 
@@ -169,7 +172,7 @@ if uploaded_zip:
                     texts[name] = cleaned
 
             # ----------------------------
-            # 글자 수 결과 표
+            # 글자 수 결과
             # ----------------------------
             st.subheader("📊 레이아웃 제거 전/후 글자 수")
 
@@ -181,7 +184,9 @@ if uploaded_zip:
 
             st.dataframe(df_lengths, use_container_width=True)
 
+            # ----------------------------
             # 기준 미달 표시
+            # ----------------------------
             st.subheader("📉 최소 글자 수 기준 미달")
 
             below = [
